@@ -62,7 +62,6 @@ def build_chain() -> Any:
     Use the vision-capable DeepSeek Flash model named
     ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
     """
-   
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_deepseek import ChatDeepSeek
@@ -208,7 +207,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     multimodal human messages. LangChain's ``batch`` method is one simple way
     to process independent receipt-extraction prompts in parallel.
     """
-
     def parse_record(value: Any) -> dict[str, Decimal] | None:
         if isinstance(value, Exception):
             return None
@@ -331,13 +329,9 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     total_without_discounts = Decimal("0.00")
     for record in records:
         if record is None:
-            # Preserve the required end-to-end CSV output even if one API call
-            # fails. A zero contribution is preferable to crashing the runner.
             continue
         total_paid += record["amount_paid_after_rounding"]
         if record["needs_resolution"]:
-            # If the focused resolver still reports a discrepancy, prefer the
-            # independently itemized positive-charge route over a copied total.
             total_without_discounts += record["original_route"]
         else:
             total_without_discounts += record["discount_route"]
@@ -346,8 +340,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
         QUERY_1: f"HK${total_paid:.2f}",
         QUERY_2: f"HK${total_without_discounts:.2f}",
     }
-
-
 
 _MONEY_RE = re.compile(
     r"(?<![\w.])(?:HK\$|\$)?\s*(-?\d[\d,]*(?:\.\d+)?)(?![\w.])",
