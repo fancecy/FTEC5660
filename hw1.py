@@ -348,7 +348,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     }
 
 
-# Everything below is provided runner/scoring code. No edits are needed.
 
 _MONEY_RE = re.compile(
     r"(?<![\w.])(?:HK\$|\$)?\s*(-?\d[\d,]*(?:\.\d+)?)(?![\w.])",
