@@ -208,7 +208,7 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     multimodal human messages. LangChain's ``batch`` method is one simple way
     to process independent receipt-extraction prompts in parallel.
     """
-    ### YOUR CODE HERE
+
     def parse_record(value: Any) -> dict[str, Decimal] | None:
         if isinstance(value, Exception):
             return None
