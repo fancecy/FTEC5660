@@ -80,7 +80,10 @@ Required JSON keys (all values must be plain decimal strings with two decimals):
 {{
   "amount_paid_after_rounding": "0.00",
   "subtotal_after_discounts_before_rounding": "0.00",
+  "discount_lines": [{{"label": "exact receipt label", "amount": "0.00"}}],
   "discount_total": "0.00",
+  "original_charge_lines": [{{"label": "exact item or charge", "amount": "0.00"}}],
+  "original_charge_total": "0.00",
   "amount_without_discounts": "0.00"
 }}
 
@@ -94,10 +97,18 @@ Rules:
 3. discount_total is the sum of the absolute values of every discount,
    promotion, coupon, member, app, markdown, packaging-damage, percentage-off,
    and other price-reduction line applied before SUBTOTAL. Count each applied
-   discount once; ignore informational totals and ROUNDING.
-4. amount_without_discounts = subtotal_after_discounts_before_rounding +
-   discount_total. Recalculate this yourself and make the arithmetic exact.
-5. Read signs and decimal points carefully. If a label is bilingual, use its
+   discount once; ignore positive item/packaging charges, informational totals,
+   and ROUNDING. Put every counted reduction in discount_lines, in top-to-bottom
+   receipt order, using a positive amount. Do a second vertical scan from the
+   first item through SUBTOTAL so that no small discount line is skipped.
+4. Independently list every positive merchandise/charge line before SUBTOTAL in
+   original_charge_lines and sum them as original_charge_total. Use the extended
+   line amount printed at the right; do not multiply by quantity again. Exclude
+   SUBTOTAL, payments, cash tendered, change, points, balances, and other summaries.
+5. amount_without_discounts must equal BOTH subtotal_after_discounts_before_rounding
+   + discount_total AND original_charge_total. If the two routes disagree, rescan
+   every source line and fix the misread or omitted line before returning JSON.
+6. Read signs and decimal points carefully. If a label is bilingual, use its
    numeric relationship and location on the receipt to identify it.
 """
 
@@ -134,8 +145,38 @@ Rules:
                         "text": (
                             "Independently inspect this receipt, audit the draft "
                             "below, and correct every reading, classification, or "
-                            "arithmetic error. The draft may be empty or invalid. "
+                            "arithmetic error. Do not trust the draft's discount "
+                            "total: rebuild discount_lines from a fresh top-to-bottom "
+                            "scan of the image, independently rebuild original_charge_lines, "
+                            "and reconcile the two calculation routes. The draft may "
+                            "be empty or invalid. "
                             "Return one corrected JSON object only.\n\nDRAFT:\n{draft}"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "{image_data_url}"},
+                    },
+                ],
+            ),
+        ]
+    )
+
+    resolve_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", extraction_rules),
+            (
+                "human",
+                [
+                    {
+                        "type": "text",
+                        "text": (
+                            "The audited record below still has inconsistent totals. "
+                            "Resolve the discrepancy from the image: trace every "
+                            "discount line and every positive original charge line, "
+                            "identify the exact omitted or misread value, and make both "
+                            "calculation routes agree. Return corrected JSON only.\n\n"
+                            "AUDITED RECORD:\n{draft}"
                         ),
                     },
                     {
@@ -151,6 +192,7 @@ Rules:
     return {
         "extract": extract_prompt | model | parser,
         "audit": audit_prompt | model | parser,
+        "resolve": resolve_prompt | model | parser,
     }
 
 
@@ -189,6 +231,7 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
             "amount_paid_after_rounding",
             "subtotal_after_discounts_before_rounding",
             "discount_total",
+            "amount_without_discounts",
         )
         parsed: dict[str, Decimal] = {}
         try:
@@ -201,8 +244,38 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
         subtotal = parsed["subtotal_after_discounts_before_rounding"]
         discount = abs(parsed["discount_total"])
         parsed["discount_total"] = discount
-        # Deterministic arithmetic is more reliable than the model's copied sum.
-        parsed["amount_without_discounts"] = subtotal + discount
+        discount_route = subtotal + discount
+
+        original_route: Decimal | None = None
+        charge_lines = data.get("original_charge_lines")
+        if isinstance(charge_lines, list) and charge_lines:
+            try:
+                original_route = sum(
+                    (
+                        Decimal(
+                            re.sub(r"[^0-9.\-]", "", str(line["amount"]))
+                        ).quantize(Decimal("0.01"))
+                        for line in charge_lines
+                    ),
+                    Decimal("0.00"),
+                )
+            except (KeyError, InvalidOperation, TypeError, ValueError):
+                original_route = None
+        if original_route is None and "original_charge_total" in data:
+            try:
+                cleaned = re.sub(
+                    r"[^0-9.\-]", "", str(data["original_charge_total"])
+                )
+                original_route = Decimal(cleaned).quantize(Decimal("0.01"))
+            except (InvalidOperation, TypeError, ValueError):
+                original_route = None
+
+        parsed["discount_route"] = discount_route
+        parsed["original_route"] = original_route or discount_route
+        parsed["needs_resolution"] = Decimal(
+            original_route is not None
+            and abs(original_route - discount_route) > Decimal("0.01")
+        )
         if parsed["amount_paid_after_rounding"] < 0 or subtotal < 0:
             return None
         return parsed
@@ -227,16 +300,47 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
         return_exceptions=True,
     )
 
+    selected = [
+        checked if parse_record(checked) is not None else draft
+        for draft, checked in zip(drafts, audited)
+    ]
+    records = [parse_record(value) for value in selected]
+    disputed_indices = [
+        index
+        for index, record in enumerate(records)
+        if record is not None and record["needs_resolution"]
+    ]
+    if disputed_indices:
+        resolved = chain["resolve"].batch(
+            [
+                {
+                    "image_data_url": inputs[index]["image_data_url"],
+                    "draft": selected[index],
+                }
+                for index in disputed_indices
+            ],
+            config={"max_concurrency": min(concurrency, len(disputed_indices))},
+            return_exceptions=True,
+        )
+        for index, resolution in zip(disputed_indices, resolved):
+            corrected = parse_record(resolution)
+            if corrected is not None:
+                records[index] = corrected
+
     total_paid = Decimal("0.00")
     total_without_discounts = Decimal("0.00")
-    for draft, checked in zip(drafts, audited):
-        record = parse_record(checked) or parse_record(draft)
+    for record in records:
         if record is None:
             # Preserve the required end-to-end CSV output even if one API call
             # fails. A zero contribution is preferable to crashing the runner.
             continue
         total_paid += record["amount_paid_after_rounding"]
-        total_without_discounts += record["amount_without_discounts"]
+        if record["needs_resolution"]:
+            # If the focused resolver still reports a discrepancy, prefer the
+            # independently itemized positive-charge route over a copied total.
+            total_without_discounts += record["original_route"]
+        else:
+            total_without_discounts += record["discount_route"]
 
     return {
         QUERY_1: f"HK${total_paid:.2f}",

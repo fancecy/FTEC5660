@@ -54,8 +54,10 @@ homework runner.
 flowchart LR
     A[Receipt images] --> B[Parallel vision extraction]
     B --> C[Independent vision audit]
-    C --> D[Strict JSON parsing]
-    D --> E[Decimal validation and arithmetic]
+    C --> D[Two-route arithmetic check]
+    D -->|disagreement| C2[Focused reconciliation]
+    C2 --> D
+    D -->|agreement| E[Strict parsing and Decimal sums]
     E --> F[Folder-level totals]
     F --> G[Two single-amount responses]
 ```
@@ -63,9 +65,12 @@ flowchart LR
 The solution builds two reusable LangChain pipelines around the required
 `deepseek-v4-flash-vision-exp` model. Each receipt is first read independently
 to identify the final payment after rounding, the discounted subtotal before
-rounding, and every applied discount. A second vision pass audits the draft
-against the original image and corrects recognition, classification, and
-arithmetic errors. `answer_queries()` batches receipt calls in parallel, parses
+rounding, and itemized lists of every applied discount and every original
+positive charge. A second vision pass audits the draft against the original
+image and corrects recognition, classification, and arithmetic errors. The
+discount-based total is cross-checked against the independently summed positive
+charges; only inconsistent receipts receive a focused reconciliation pass.
+`answer_queries()` batches receipt calls in parallel, parses
 the audited JSON defensively, recomputes each undiscounted amount as subtotal
 plus the absolute discount total with `Decimal`, and then sums all receipts in
 Python. This keeps aggregation deterministic and guarantees that each final
