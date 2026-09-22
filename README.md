@@ -48,6 +48,25 @@ DeepSeek Flash model. JPEG, PNG, GIF, and WebP inputs are accepted by the
 homework runner.
 
 
-## Homework 1 solution: 
-> to students: please fill your solution description here.
+## Homework 1 solution
 
+```mermaid
+flowchart LR
+    A[Receipt images] --> B[Parallel vision extraction]
+    B --> C[Independent vision audit]
+    C --> D[Strict JSON parsing]
+    D --> E[Decimal validation and arithmetic]
+    E --> F[Folder-level totals]
+    F --> G[Two single-amount responses]
+```
+
+The solution builds two reusable LangChain pipelines around the required
+`deepseek-v4-flash-vision-exp` model. Each receipt is first read independently
+to identify the final payment after rounding, the discounted subtotal before
+rounding, and every applied discount. A second vision pass audits the draft
+against the original image and corrects recognition, classification, and
+arithmetic errors. `answer_queries()` batches receipt calls in parallel, parses
+the audited JSON defensively, recomputes each undiscounted amount as subtotal
+plus the absolute discount total with `Decimal`, and then sums all receipts in
+Python. This keeps aggregation deterministic and guarantees that each final
+response contains exactly one HKD amount.
